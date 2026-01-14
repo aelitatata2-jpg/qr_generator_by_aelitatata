@@ -301,8 +301,9 @@ const App: React.FC = () => {
         skipEmptyLines: true,
         complete: (results) => {
           if (results.data && results.data.length > 0) {
-            // Use results.meta.fields to get ALL headers from CSV correctly
-            const headers = results.meta.fields || Object.keys(results.data[0] || {});
+            // PAPAPARSE: results.meta.fields handles all columns in the first row.
+            const headers = results.meta.fields?.map((h, i) => h.trim() || `Колонка ${i + 1}`) || 
+                            Object.keys(results.data[0] || {}).map((h, i) => h.trim() || `Колонка ${i + 1}`);
             setBulkHeaders(headers);
             setBulkRows(results.data);
             autoMapFields(headers);
@@ -319,20 +320,26 @@ const App: React.FC = () => {
           const wsname = wb.SheetNames[0];
           const ws = wb.Sheets[wsname];
           
-          // Get headers using {header: 1} to ensure we get ALL columns in the first row
-          const sheetArray = XLSX.utils.sheet_to_json(ws, { header: 1 }) as any[][];
-          if (sheetArray.length > 0) {
-            const rawHeaders = sheetArray[0];
-            const headers = rawHeaders
-              .map(h => String(h || '').trim())
-              .filter(h => h !== '' && h !== 'undefined');
-            
-            const data = XLSX.utils.sheet_to_json(ws);
+          // ROBUST EXCEL HEADER EXTRACTION:
+          // Instead of relying on data rows which might be sparse, we use the worksheet range
+          const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
+          const headers: string[] = [];
+          
+          for (let C = range.s.c; C <= range.e.c; ++C) {
+            const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: C });
+            const cell = ws[cellAddress];
+            const headerVal = cell ? String(cell.v).trim() : '';
+            // If header is empty, use Excel-style Column name (A, B, C...)
+            headers.push(headerVal || `Колонка ${XLSX.utils.encode_col(C)}`);
+          }
+
+          const data = XLSX.utils.sheet_to_json(ws);
+          if (headers.length > 0) {
             setBulkHeaders(headers);
             setBulkRows(data);
             autoMapFields(headers);
           } else {
-            alert("Файл пуст.");
+            alert("Файл пуст или поврежден.");
           }
         } catch (err) {
           console.error(err);
@@ -349,7 +356,7 @@ const App: React.FC = () => {
     const newMapping = { ...mappedFields };
     headers.forEach(h => {
       const lower = h.toLowerCase();
-      if (lower.includes('url') || lower.includes('ссылка') || lower.includes('link')) newMapping.url = h;
+      if (lower.includes('url') || lower.includes('ссылка') || lower.includes('link') || lower.includes('tg') || lower.includes('tele')) newMapping.url = h;
       if (lower.includes('name') || lower.includes('имя') || lower.includes('first')) newMapping.firstName = h;
       if (lower.includes('last') || lower.includes('фамилия')) newMapping.lastName = h;
       if (lower.includes('plat') || lower.includes('соц') || lower.includes('платформ')) newMapping.platform = h;
@@ -593,7 +600,7 @@ const App: React.FC = () => {
                           <div>
                             <Label className="text-[10px] text-slate-400 uppercase tracking-widest">Колонка со ссылкой (URL) *</Label>
                             <select 
-                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none"
+                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none overflow-y-auto"
                               style={{backgroundImage: 'url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3e%3cpolyline points=\'6 9 12 15 18 9\'%3e%3c/polyline%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.5rem center', backgroundSize: '1.2em'}}
                               value={mappedFields.url}
                               onChange={(e) => setMappedFields({...mappedFields, url: e.target.value})}
@@ -605,7 +612,7 @@ const App: React.FC = () => {
                           <div>
                             <Label className="text-[10px] text-slate-400 uppercase tracking-widest">Имя (для имени файла)</Label>
                             <select 
-                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none"
+                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none overflow-y-auto"
                               style={{backgroundImage: 'url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3e%3cpolyline points=\'6 9 12 15 18 9\'%3e%3c/polyline%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.5rem center', backgroundSize: '1.2em'}}
                               value={mappedFields.firstName}
                               onChange={(e) => setMappedFields({...mappedFields, firstName: e.target.value})}
@@ -617,7 +624,7 @@ const App: React.FC = () => {
                           <div>
                             <Label className="text-[10px] text-slate-400 uppercase tracking-widest">Фамилия (для имени файла)</Label>
                             <select 
-                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none"
+                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none overflow-y-auto"
                               style={{backgroundImage: 'url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3e%3cpolyline points=\'6 9 12 15 18 9\'%3e%3c/polyline%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.5rem center', backgroundSize: '1.2em'}}
                               value={mappedFields.lastName}
                               onChange={(e) => setMappedFields({...mappedFields, lastName: e.target.value})}
@@ -629,7 +636,7 @@ const App: React.FC = () => {
                           <div>
                             <Label className="text-[10px] text-slate-400 uppercase tracking-widest">Платформа (для имени файла)</Label>
                             <select 
-                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none"
+                              className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none focus:ring-2 focus:ring-emerald-500 text-black appearance-none overflow-y-auto"
                               style={{backgroundImage: 'url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns=\'http://www.w3.org/2000/svg\' viewBox=\'0 0 24 24\' fill=\'none\' stroke=\'currentColor\' stroke-width=\'2\' stroke-linecap=\'round\' stroke-linejoin=\'round\'%3e%3cpolyline points=\'6 9 12 15 18 9\'%3e%3c/polyline%3e%3c/svg%3e")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 0.5rem center', backgroundSize: '1.2em'}}
                               value={mappedFields.platform}
                               onChange={(e) => setMappedFields({...mappedFields, platform: e.target.value})}
