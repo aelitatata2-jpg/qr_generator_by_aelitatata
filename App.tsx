@@ -45,6 +45,7 @@ interface MappedFields {
   firstName: string;
   lastName: string;
   platform: string;
+  customPlatformValue: string;
 }
 
 const App: React.FC = () => {
@@ -69,7 +70,8 @@ const App: React.FC = () => {
     url: '',
     firstName: '',
     lastName: '',
-    platform: ''
+    platform: '',
+    customPlatformValue: ''
   });
   
   const [isProcessing, setIsProcessing] = useState(false);
@@ -301,7 +303,6 @@ const App: React.FC = () => {
         skipEmptyLines: true,
         complete: (results) => {
           if (results.data && results.data.length > 0) {
-            // PAPAPARSE: results.meta.fields handles all columns in the first row.
             const headers = results.meta.fields?.map((h, i) => h.trim() || `Колонка ${i + 1}`) || 
                             Object.keys(results.data[0] || {}).map((h, i) => h.trim() || `Колонка ${i + 1}`);
             setBulkHeaders(headers);
@@ -319,9 +320,6 @@ const App: React.FC = () => {
           const wb = XLSX.read(bstr, { type: 'binary' });
           const wsname = wb.SheetNames[0];
           const ws = wb.Sheets[wsname];
-          
-          // ROBUST EXCEL HEADER EXTRACTION:
-          // Instead of relying on data rows which might be sparse, we use the worksheet range
           const range = XLSX.utils.decode_range(ws['!ref'] || 'A1');
           const headers: string[] = [];
           
@@ -329,7 +327,6 @@ const App: React.FC = () => {
             const cellAddress = XLSX.utils.encode_cell({ r: range.s.r, c: C });
             const cell = ws[cellAddress];
             const headerVal = cell ? String(cell.v).trim() : '';
-            // If header is empty, use Excel-style Column name (A, B, C...)
             headers.push(headerVal || `Колонка ${XLSX.utils.encode_col(C)}`);
           }
 
@@ -361,6 +358,7 @@ const App: React.FC = () => {
       if (lower.includes('last') || lower.includes('фамилия')) newMapping.lastName = h;
       if (lower.includes('plat') || lower.includes('соц') || lower.includes('платформ')) newMapping.platform = h;
     });
+    newMapping.customPlatformValue = '';
     setMappedFields(newMapping);
   };
 
@@ -407,7 +405,10 @@ const App: React.FC = () => {
           
           const fName = row[mappedFields.firstName] || '';
           const lName = row[mappedFields.lastName] || '';
-          const plat = row[mappedFields.platform] || '';
+          const plat = mappedFields.platform === '__CUSTOM__' 
+            ? mappedFields.customPlatformValue 
+            : (row[mappedFields.platform] || '');
+          
           const filename = `${fName} ${lName} ${plat}`.trim() || `qr_${Math.random().toString(36).substr(2, 5)}`;
           zip.file(`${filename}.svg`, processedSvg);
         }
@@ -642,8 +643,19 @@ const App: React.FC = () => {
                               onChange={(e) => setMappedFields({...mappedFields, platform: e.target.value})}
                             >
                               <option value="">Не использовать</option>
+                              <option value="__CUSTOM__" className="text-emerald-600 font-black">Ввести своё значение...</option>
                               {bulkHeaders.map((h, i) => <option key={`${h}-${i}`} value={h}>{h}</option>)}
                             </select>
+                            {mappedFields.platform === '__CUSTOM__' && (
+                              <div className="mt-2 animate-in slide-in-from-top-1 duration-200">
+                                <Input 
+                                  placeholder="Напр. Instagram, Telegram..." 
+                                  value={mappedFields.customPlatformValue}
+                                  onChange={(e) => setMappedFields({...mappedFields, customPlatformValue: e.target.value})}
+                                  className="h-9 text-xs"
+                                />
+                              </div>
+                            )}
                           </div>
                         </div>
                         <div className="mt-4 flex justify-end">
