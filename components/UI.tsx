@@ -1,8 +1,9 @@
 
-import React, { useState } from 'react';
-import { ChevronDown, ChevronUp } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+// Add CheckCircle2 to imports
+import { ChevronDown, ChevronUp, X, CheckCircle2 } from 'lucide-react';
 
-export const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'outline' | 'ghost' }> = ({ 
+export const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger' }> = ({ 
   children, 
   className = '', 
   variant = 'primary', 
@@ -14,6 +15,7 @@ export const Button: React.FC<React.ButtonHTMLAttributes<HTMLButtonElement> & { 
     secondary: 'bg-indigo-600 text-white hover:bg-indigo-700 focus:ring-indigo-500',
     outline: 'border border-gray-300 text-gray-700 hover:bg-gray-50 focus:ring-gray-200',
     ghost: 'text-gray-600 hover:bg-gray-100 focus:ring-gray-100',
+    danger: 'bg-red-50 text-red-600 hover:bg-red-100 focus:ring-red-200',
   };
 
   return (
@@ -62,3 +64,52 @@ export const Card: React.FC<{ children: React.ReactNode; className?: string }> =
     {children}
   </div>
 );
+
+export const Modal: React.FC<{ 
+  isOpen: boolean; 
+  onClose: () => void; 
+  title: string; 
+  children: React.ReactNode;
+  footer?: React.ReactNode;
+}> = ({ isOpen, onClose, title, children, footer }) => {
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="flex items-center justify-between p-5 border-b border-slate-100">
+          <h3 className="font-black uppercase tracking-tight text-slate-800">{title}</h3>
+          <button onClick={onClose} className="p-1 hover:bg-slate-100 rounded-full transition-colors">
+            <X size={20} className="text-slate-400" />
+          </button>
+        </div>
+        <div className="p-6">
+          {children}
+        </div>
+        {footer && (
+          <div className="flex justify-end gap-3 p-5 bg-slate-50 border-t border-slate-100">
+            {footer}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export const Toast: React.FC<{ message: string; visible: boolean; onHide: () => void }> = ({ message, visible, onHide }) => {
+  useEffect(() => {
+    if (visible) {
+      const timer = setTimeout(onHide, 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [visible, onHide]);
+
+  if (!visible) return null;
+
+  return (
+    <div className="fixed bottom-8 left-1/2 -translate-x-1/2 z-[200] bg-slate-800 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-2 animate-in slide-in-from-bottom-4 duration-300">
+      <CheckCircle2 size={18} className="text-emerald-400" />
+      <span className="text-sm font-bold uppercase tracking-wider">{message}</span>
+    </div>
+  );
+};
