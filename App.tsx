@@ -18,7 +18,8 @@ import {
   FileJson,
   Info,
   FileCode,
-  FileImage
+  FileImage,
+  AlertTriangle
 } from 'lucide-react';
 import { 
   Accordion, 
@@ -161,6 +162,7 @@ const App: React.FC = () => {
   
   const [isProcessing, setIsProcessing] = useState(false);
   const [logoPixelSize, setLogoPixelSize] = useState(80);
+  const [skippedRows, setSkippedRows] = useState<string[]>([]);
 
   const [config, setConfig] = useState<QRConfig>({
     data: 'https://www.google.com',
@@ -240,12 +242,15 @@ const App: React.FC = () => {
     const lSize = Number(logoPixelSize);
     const scale = size / 300;
     
+    // Strict dimension enforcement
     svg.setAttribute('width', size.toString());
     svg.setAttribute('height', size.toString());
     svg.setAttribute('viewBox', `0 0 ${size} ${size}`);
+    svg.removeAttribute('style'); // Clear potential library-set styles
     
     const imageElement = svg.querySelector('image');
     if (imageElement) {
+       // Manual scaling for the logo to ensure it stays proportional in the forced coordinate system
        const scaledLogoSize = lSize * scale;
        const logoX = (size - scaledLogoSize) / 2;
        const logoY = (size - scaledLogoSize) / 2;
@@ -253,6 +258,7 @@ const App: React.FC = () => {
        imageElement.setAttribute('y', logoY.toFixed(2));
        imageElement.setAttribute('width', scaledLogoSize.toFixed(2));
        imageElement.setAttribute('height', scaledLogoSize.toFixed(2));
+       
        const rect = svg.querySelector('rect[data-role="logo-bg"]');
        if (rect) rect.remove();
     }
@@ -315,11 +321,14 @@ const App: React.FC = () => {
     const filename = nameParts.length > 0 ? nameParts.join('_') : 'QR_Code';
     const size = Math.floor(exportSize);
     
+    // Maintain proportional margin regardless of final size
+    const scaledMargin = Math.floor(config.margin * (size / 300));
+
     const downloadQr = new QRCodeStyling({
       ...computedConfig,
       width: size,
       height: size,
-      margin: Math.floor(config.margin * (size / 300)),
+      margin: scaledMargin,
       type: 'svg',
     });
 
@@ -346,6 +355,7 @@ const App: React.FC = () => {
         const img = new Image();
         img.onload = () => {
           ctx.clearRect(0, 0, size, size);
+          // Strict scaling forced by drawImage dimensions
           ctx.drawImage(img, 0, 0, size, size);
           canvas.toBlob((b) => {
             if (b) {
@@ -400,6 +410,7 @@ const App: React.FC = () => {
     setWorkbook(null);
     setSheetNames([]);
     setSelectedSheet('');
+    setSkippedRows([]);
     if (file.name.toLowerCase().endsWith('.csv')) {
       Papa.parse(file, {
         header: true,
@@ -445,27 +456,75 @@ const App: React.FC = () => {
     const urlField = mappedFields.url;
     if (bulkRows.length === 0 || (!urlField && mappedFields.urlCustom === '')) return;
     setIsProcessing(true);
+    setSkippedRows([]);
     const zip = new JSZip();
+    const errors: string[] = [];
+    let processedCount = 0;
+
     try {
       const size = Math.floor(exportSize);
-      for (const row of bulkRows) {
-        const rowUrl = urlField === '__CUSTOM__' ? mappedFields.urlCustom : row[urlField];
-        if (!rowUrl) continue;
-        const tempQr = new QRCodeStyling({ ...computedConfig, width: size, height: size, data: normalizeUrl(rowUrl) });
+      const scaledMargin = Math.floor(config.margin * (size / 300));
+
+      // Aggressive alphanumeric cleaner
+      const aggressiveAlphaClean = (val: any): string => {
+        if (val === null || val === undefined) return "";
+        return String(val).replace(/[^a-zA-Zа-яА-Я0-9]/g, "");
+      };
+
+      for (let i = 0; i < bulkRows.length; i++) {
+        const row = bulkRows[i];
+        
+        // Data Retrieval
+        const rawUrl = urlField === '__CUSTOM__' ? mappedFields.urlCustom : row[urlField];
+        const rawFirstName = mappedFields.firstName === '__CUSTOM__' ? mappedFields.firstNameCustom : row[mappedFields.firstName];
+        const rawLastName = mappedFields.lastName === '__CUSTOM__' ? mappedFields.lastNameCustom : row[mappedFields.lastName];
+
+        // Strict Cleaning
+        const alphaUrl = aggressiveAlphaClean(rawUrl);
+        const alphaFirstName = aggressiveAlphaClean(rawFirstName);
+        const alphaLastName = aggressiveAlphaClean(rawLastName);
+
+        // Logic 1: Completely Empty Row (Silent Skip)
+        // If neither the URL nor any of the name parts have alphanumeric content, ignore it silently.
+        if (alphaUrl.length === 0 && alphaFirstName.length === 0 && alphaLastName.length === 0) {
+          continue;
+        }
+
+        // Identifying label for logging
+        const firstNameStr = String(rawFirstName || "").trim();
+        const lastNameStr = String(rawLastName || "").trim();
+        const rowIdentifier = `${firstNameStr} ${lastNameStr}`.trim() || `Строка ${i + 1}`;
+
+        // Logic 2: User Error (Missing Link for Named Person)
+        // If the URL is empty but the row has at least some name data, it's a genuine error.
+        if (alphaUrl.length === 0) {
+          console.warn(`Missing link for row ${i}: ${rowIdentifier}`);
+          errors.push(`Для ${rowIdentifier} не был сделан QR-код: нет ссылки.`);
+          continue;
+        }
+
+        // Logic 3: Valid Row
+        const rowUrl = rawUrl;
+        const tempQr = new QRCodeStyling({ 
+          ...computedConfig, 
+          width: size, 
+          height: size, 
+          margin: scaledMargin,
+          data: normalizeUrl(rowUrl) 
+        });
+
         const blob = await tempQr.getRawData('svg');
         if (blob) {
           const svgText = await (blob as Blob).text();
           const processedSvg = processSvgString(svgText, size);
-          const getVal = (field: 'firstName' | 'lastName' | 'platform') => {
-            const mapping = mappedFields[field];
-            if (field === 'platform') return mapping;
-            return mapping === '__CUSTOM__' ? mappedFields[`${field}Custom`] : (row[mapping] || '');
-          };
-          const fName = [getVal('firstName'), getVal('lastName'), getVal('platform')]
-            .map(v => String(v).trim()).filter(Boolean).join('_') || 'qr';
+          
+          const platformStr = mappedFields.platform === '__CUSTOM__' ? mappedFields.platformCustom : mappedFields.platform;
+          const fName = [firstNameStr, lastNameStr, platformStr]
+            .map(v => String(v).trim()).filter(Boolean).join('_') || `qr_${i + 1}`;
           
           if (format === 'svg') {
             zip.file(`${fName}.svg`, processedSvg);
+            processedCount++;
           } else {
             const canvas = document.createElement('canvas');
             canvas.width = size;
@@ -478,7 +537,10 @@ const App: React.FC = () => {
                   ctx.clearRect(0, 0, size, size);
                   ctx.drawImage(img, 0, 0, size, size);
                   canvas.toBlob((b) => {
-                    if (b) zip.file(`${fName}.png`, b);
+                    if (b) {
+                      zip.file(`${fName}.png`, b);
+                      processedCount++;
+                    }
                     resolve();
                   }, 'image/png');
                 };
@@ -489,12 +551,25 @@ const App: React.FC = () => {
           }
         }
       }
-      const content = await zip.generateAsync({ type: 'blob' });
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(content);
-      link.download = `Bulk_QR_${format.toUpperCase()}.zip`;
-      link.click();
-    } finally { setIsProcessing(false); }
+
+      setSkippedRows(errors);
+
+      if (processedCount > 0) {
+        const content = await zip.generateAsync({ type: 'blob' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(content);
+        link.download = `Bulk_QR_${format.toUpperCase()}.zip`;
+        link.click();
+        setToastMessage(errors.length > 0 ? `Готово (пропущено ${errors.length})` : 'Архив готов');
+      } else {
+        alert("Нет данных для генерации QR-кодов. Пожалуйста, проверьте ваш файл.");
+      }
+    } catch (err) {
+      console.error("Bulk Generation Error:", err);
+      alert("Ошибка генерации архива.");
+    } finally { 
+      setIsProcessing(false); 
+    }
   };
 
   const openSaveModal = () => {
@@ -611,6 +686,7 @@ const App: React.FC = () => {
     setWorkbook(null);
     setSheetNames([]);
     setSelectedSheet('');
+    setSkippedRows([]);
   };
 
   const MappingField = ({ label, field, mappedFields, setMappedFields, bulkHeaders, required }: any) => {
@@ -637,7 +713,7 @@ const App: React.FC = () => {
           {isCustom && (
             <Input 
               placeholder="Введите текст..." 
-              value={mappedFields[customFieldName]} 
+              value={mappedFields[customFieldName] || ''} 
               onChange={(e) => setMappedFields({ ...mappedFields, [customFieldName]: e.target.value })} 
               className="h-10 text-xs"
             />
@@ -691,61 +767,79 @@ const App: React.FC = () => {
                  </div>
               </Accordion>
             ) : (
-              <Card className="p-6 space-y-6">
-                <div className="flex items-center gap-2 mb-4"><FileText className="text-emerald-600" size={18} /><h3 className="font-black text-sm uppercase">Массовый импорт</h3></div>
-                <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-start gap-3">
-                  <Info className="text-emerald-600 shrink-0 mt-0.5" size={18} />
-                  <p className="text-emerald-800 text-xs font-bold uppercase tracking-tight leading-relaxed">
-                    Внимание. Текущие настройки дизайна будут применены ко всему списку.
-                  </p>
-                </div>
-                {bulkRows.length === 0 ? (
-                  <div className="relative border-2 border-dashed border-slate-200 rounded-xl p-10 text-center hover:bg-emerald-50 cursor-pointer bg-slate-50/50">
-                    <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileUploadRaw} />
-                    <Upload size={24} className="mx-auto text-emerald-600 mb-2" />
-                    <p className="font-black text-[10px] uppercase">Загрузите CSV/Excel</p>
+              <div className="space-y-6">
+                <Card className="p-6 space-y-6">
+                  <div className="flex items-center gap-2 mb-4"><FileText className="text-emerald-600" size={18} /><h3 className="font-black text-sm uppercase">Массовый импорт</h3></div>
+                  <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-start gap-3">
+                    <Info className="text-emerald-600 shrink-0 mt-0.5" size={18} />
+                    <p className="text-emerald-800 text-xs font-bold uppercase tracking-tight leading-relaxed">
+                      Внимание. Текущие настройки дизайна будут применены ко всему списку.
+                    </p>
                   </div>
-                ) : (
-                  <div className="space-y-6">
-                    {sheetNames.length > 1 && (
-                      <div className="border-b pb-4 mb-2">
-                        <Label className="text-[10px] uppercase">Выберите лист</Label>
-                        <select className="w-full h-10 px-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none" value={selectedSheet} onChange={handleSheetSelect}>
-                          {sheetNames.map(name => <option key={name} value={name}>{name}</option>)}
-                        </select>
-                      </div>
-                    )}
-                    <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
-                      <div className="grid grid-cols-2 gap-4">
-                        <MappingField label="Имя" field="firstName" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} />
-                        <MappingField label="Фамилия" field="lastName" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} />
-                        <div className="space-y-1.5">
-                          <Label className="text-[10px] uppercase">Платформа</Label>
-                          <select className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none" value={mappedFields.platform} onChange={(e) => setMappedFields({ ...mappedFields, platform: e.target.value })}>
-                            <option value="Instagram">Instagram</option>
-                            <option value="Telegram">Telegram</option>
+                  {bulkRows.length === 0 ? (
+                    <div className="relative border-2 border-dashed border-slate-200 rounded-xl p-10 text-center hover:bg-emerald-50 cursor-pointer bg-slate-50/50">
+                      <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileUploadRaw} />
+                      <Upload size={24} className="mx-auto text-emerald-600 mb-2" />
+                      <p className="font-black text-[10px] uppercase">Загрузите CSV/Excel</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-6">
+                      {sheetNames.length > 1 && (
+                        <div className="border-b pb-4 mb-2">
+                          <Label className="text-[10px] uppercase">Выберите лист</Label>
+                          <select className="w-full h-10 px-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none" value={selectedSheet} onChange={handleSheetSelect}>
+                            {sheetNames.map(name => <option key={name} value={name}>{name}</option>)}
                           </select>
                         </div>
-                        <MappingField label="Ссылка *" field="url" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} required={true} />
-                      </div>
-                    </div>
-                    <div className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm space-y-4">
-                      <div>
-                        <Label className="text-[10px] uppercase text-slate-400">Формат скачивания:</Label>
-                        <div className="flex gap-2 mt-2">
-                          <button onClick={() => setBulkExportFormat('png')} className={`flex-1 py-2.5 rounded-lg flex items-center justify-center gap-2 font-black uppercase text-[10px] transition-all ${bulkExportFormat === 'png' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><FileImage size={14} /> PNG</button>
-                          <button onClick={() => setBulkExportFormat('svg')} className={`flex-1 py-2.5 rounded-lg flex items-center justify-center gap-2 font-black uppercase text-[10px] transition-all ${bulkExportFormat === 'svg' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><FileCode size={14} /> SVG</button>
+                      )}
+                      <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                          <MappingField label="Имя" field="firstName" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} />
+                          <MappingField label="Фамилия" field="lastName" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} />
+                          <div className="space-y-1.5">
+                            <Label className="text-[10px] uppercase">Платформа</Label>
+                            <select className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold outline-none" value={mappedFields.platform} onChange={(e) => setMappedFields({ ...mappedFields, platform: e.target.value })}>
+                              <option value="Instagram">Instagram</option>
+                              <option value="Telegram">Telegram</option>
+                            </select>
+                          </div>
+                          <MappingField label="Ссылка *" field="url" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} required={true} />
                         </div>
                       </div>
-                      <div className="pt-2 border-t border-slate-50">
-                        <Label className="text-[10px] uppercase text-slate-400">Пример названия файла:</Label>
-                        <div className="mt-2 bg-slate-50 px-3 py-2 rounded-lg font-mono text-[11px] text-emerald-600 font-bold overflow-hidden text-ellipsis whitespace-nowrap">{getExampleFilename()}</div>
+                      <div className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm space-y-4">
+                        <div>
+                          <Label className="text-[10px] uppercase text-slate-400">Формат скачивания:</Label>
+                          <div className="flex gap-2 mt-2">
+                            <button onClick={() => setBulkExportFormat('png')} className={`flex-1 py-2.5 rounded-lg flex items-center justify-center gap-2 font-black uppercase text-[10px] transition-all ${bulkExportFormat === 'png' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><FileImage size={14} /> PNG</button>
+                            <button onClick={() => setBulkExportFormat('svg')} className={`flex-1 py-2.5 rounded-lg flex items-center justify-center gap-2 font-black uppercase text-[10px] transition-all ${bulkExportFormat === 'svg' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><FileCode size={14} /> SVG</button>
+                          </div>
+                        </div>
+                        <div className="pt-2 border-t border-slate-50">
+                          <Label className="text-[10px] uppercase text-slate-400">Пример названия файла:</Label>
+                          <div className="mt-2 bg-slate-50 px-3 py-2 rounded-lg font-mono text-[11px] text-emerald-600 font-bold overflow-hidden text-ellipsis whitespace-nowrap">{getExampleFilename()}</div>
+                        </div>
                       </div>
+                      <Button onClick={resetBulk} variant="ghost" className="text-red-500 text-[10px] uppercase font-black w-full justify-center">Удалить текущий файл</Button>
                     </div>
-                    <Button onClick={resetBulk} variant="ghost" className="text-red-500 text-[10px] uppercase font-black w-full justify-center">Удалить текущий файл</Button>
-                  </div>
+                  )}
+                </Card>
+
+                {skippedRows.length > 0 && (
+                  <Card className="p-6 border-red-100 bg-red-50/30">
+                    <div className="flex items-center gap-2 mb-4 text-red-600">
+                      <AlertTriangle size={18} />
+                      <h3 className="font-black text-sm uppercase">Отчет о генерации: Пропущено {skippedRows.length} строк</h3>
+                    </div>
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+                      {skippedRows.map((err, idx) => (
+                        <p key={idx} className="text-[11px] font-bold text-red-500 leading-tight border-l-2 border-red-200 pl-2">
+                          {err}
+                        </p>
+                      ))}
+                    </div>
+                  </Card>
                 )}
-              </Card>
+              </div>
             )}
 
             <Accordion title="ЦВЕТА" defaultOpen={false}>
@@ -875,7 +969,7 @@ const App: React.FC = () => {
               
               <div className="space-y-4">
                 <Label className="text-[10px] uppercase text-slate-400 font-black">Размер экспорта</Label>
-                <input type="range" min="50" max="500" step="10" value={exportSize} onChange={(e) => setExportSize(parseInt(e.target.value))} className="w-full h-2 bg-emerald-100 rounded-lg accent-emerald-600 cursor-pointer" />
+                <input type="range" min="50" max="1000" step="10" value={exportSize} onChange={(e) => setExportSize(parseInt(e.target.value))} className="w-full h-2 bg-emerald-100 rounded-lg accent-emerald-600 cursor-pointer" />
                 <div className="text-center">
                   <span className="px-3 py-1 bg-emerald-50 text-emerald-700 text-xs font-black rounded-full border border-emerald-100 shadow-sm">{exportSize} x {exportSize} px</span>
                 </div>
@@ -931,6 +1025,11 @@ const App: React.FC = () => {
         </div>
       </main>
 
+      <footer className="bg-white border-t py-16 text-center">
+        <h2 className="font-black uppercase tracking-tight">QR Code Generator by aelitatata</h2>
+        <p className="text-slate-400 text-[10px] mt-4 uppercase tracking-widest">© 2025 ELIT TOOLS</p>
+      </footer>
+
       <Modal isOpen={isSaveModalOpen} onClose={() => setIsSaveModalOpen(false)} title="Сохранить шаблон" footer={<><Button variant="ghost" onClick={() => setIsSaveModalOpen(false)}>Отмена</Button><Button onClick={saveTemplate}>Сохранить</Button></>}>
         <div className="space-y-4">
           <Label className="text-[10px] uppercase">Название шаблона</Label>
@@ -946,11 +1045,6 @@ const App: React.FC = () => {
       </Modal>
 
       <Toast message={toastMessage} visible={!!toastMessage} onHide={() => setToastMessage('')} />
-
-      <footer className="bg-white border-t py-16 text-center">
-        <h2 className="font-black uppercase tracking-tight">QR Code Generator by aelitatata</h2>
-        <p className="text-slate-400 text-[10px] mt-4 uppercase tracking-widest">© 2025 ELIT TOOLS</p>
-      </footer>
     </div>
   );
 };
