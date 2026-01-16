@@ -15,7 +15,10 @@ import {
   Trash2,
   Share2,
   Download,
-  FileJson
+  FileJson,
+  Info,
+  FileCode,
+  FileImage
 } from 'lucide-react';
 import { 
   Accordion, 
@@ -141,6 +144,7 @@ const App: React.FC = () => {
   // Bulk Generation States
   const [bulkRows, setBulkRows] = useState<any[]>([]);
   const [bulkHeaders, setBulkHeaders] = useState<string[]>([]);
+  const [bulkExportFormat, setBulkExportFormat] = useState<'png' | 'svg'>('png');
   const [mappedFields, setMappedFields] = useState<MappedFields>({
     url: '',
     urlCustom: '',
@@ -437,7 +441,7 @@ const App: React.FC = () => {
     setMappedFields(m);
   };
 
-  const handleBulkDownloadZip = async (format: 'png' | 'svg' = 'svg') => {
+  const handleBulkDownloadZip = async (format: 'png' | 'svg') => {
     const urlField = mappedFields.url;
     if (bulkRows.length === 0 || (!urlField && mappedFields.urlCustom === '')) return;
     setIsProcessing(true);
@@ -459,7 +463,30 @@ const App: React.FC = () => {
           };
           const fName = [getVal('firstName'), getVal('lastName'), getVal('platform')]
             .map(v => String(v).trim()).filter(Boolean).join('_') || 'qr';
-          zip.file(`${fName}.${format}`, processedSvg);
+          
+          if (format === 'svg') {
+            zip.file(`${fName}.svg`, processedSvg);
+          } else {
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              const img = new Image();
+              const pngPromise = new Promise<void>((resolve) => {
+                img.onload = () => {
+                  ctx.clearRect(0, 0, size, size);
+                  ctx.drawImage(img, 0, 0, size, size);
+                  canvas.toBlob((b) => {
+                    if (b) zip.file(`${fName}.png`, b);
+                    resolve();
+                  }, 'image/png');
+                };
+              });
+              img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(processedSvg)));
+              await pngPromise;
+            }
+          }
         }
       }
       const content = await zip.generateAsync({ type: 'blob' });
@@ -538,19 +565,14 @@ const App: React.FC = () => {
       try {
         const content = evt.target?.result as string;
         const imported = JSON.parse(content) as QRTemplate;
-
-        // Basic validation
         if (!imported.name || !imported.config || typeof imported.logoPixelSize !== 'number') {
           throw new Error('Invalid structure');
         }
-
-        // Generate new ID and reset timestamp
         const newTemplate: QRTemplate = {
           ...imported,
           id: Date.now().toString(),
           createdAt: Date.now()
         };
-
         setTemplates(prev => {
           if (prev.length >= 10) {
             alert('Лимит шаблонов (10) превышен. Удалите лишние.');
@@ -558,8 +580,6 @@ const App: React.FC = () => {
           }
           return [...prev, newTemplate];
         });
-
-        // Apply immediately
         applyTemplate(newTemplate);
         setToastMessage('Шаблон импортирован');
       } catch (err) {
@@ -567,7 +587,6 @@ const App: React.FC = () => {
       }
     };
     reader.readAsText(file);
-    // Reset input
     if (e.target) e.target.value = '';
   };
 
@@ -594,15 +613,20 @@ const App: React.FC = () => {
     setSelectedSheet('');
   };
 
-  const MappingField = ({ label, field, mappedFields, setMappedFields, bulkHeaders }: any) => {
+  const MappingField = ({ label, field, mappedFields, setMappedFields, bulkHeaders, required }: any) => {
     const customFieldName = `${field}Custom` as keyof MappedFields;
     const isCustom = mappedFields[field] === '__CUSTOM__';
+    const showError = required && !mappedFields[field];
+
     return (
       <div className="space-y-1.5">
-        <Label className="text-[10px] uppercase">{label}</Label>
+        <div className="flex justify-between items-center">
+          <Label className="text-[10px] uppercase mb-0">{label}</Label>
+          {showError && <span className="text-[10px] font-light text-red-500">Обязательно заполните это поле</span>}
+        </div>
         <div className="flex flex-col gap-2">
           <select 
-            className="w-full h-10 px-3 bg-white border border-slate-200 rounded-lg text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none" 
+            className={`w-full h-10 px-3 bg-white border rounded-lg text-sm font-bold focus:ring-2 focus:ring-emerald-500 outline-none transition-colors ${showError ? 'border-red-300' : 'border-slate-200'}`} 
             value={mappedFields[field]} 
             onChange={(e) => setMappedFields({ ...mappedFields, [field]: e.target.value })}
           >
@@ -621,6 +645,19 @@ const App: React.FC = () => {
         </div>
       </div>
     );
+  };
+
+  const getExampleFilename = () => {
+    if (bulkRows.length === 0) return `example.${bulkExportFormat}`;
+    const firstRow = bulkRows[0];
+    const getVal = (field: 'firstName' | 'lastName' | 'platform') => {
+      const mapping = mappedFields[field];
+      if (field === 'platform') return mapping;
+      return mapping === '__CUSTOM__' ? mappedFields[`${field}Custom`] : (firstRow[mapping] || '');
+    };
+    const name = [getVal('firstName'), getVal('lastName'), getVal('platform')]
+      .map(v => String(v).trim()).filter(Boolean).join('_') || 'qr';
+    return `${name}.${bulkExportFormat}`;
   };
 
   return (
@@ -654,8 +691,14 @@ const App: React.FC = () => {
                  </div>
               </Accordion>
             ) : (
-              <Card className="p-6">
+              <Card className="p-6 space-y-6">
                 <div className="flex items-center gap-2 mb-4"><FileText className="text-emerald-600" size={18} /><h3 className="font-black text-sm uppercase">Массовый импорт</h3></div>
+                <div className="bg-emerald-50 border border-emerald-100 p-4 rounded-xl flex items-start gap-3">
+                  <Info className="text-emerald-600 shrink-0 mt-0.5" size={18} />
+                  <p className="text-emerald-800 text-xs font-bold uppercase tracking-tight leading-relaxed">
+                    Внимание. Текущие настройки дизайна будут применены ко всему списку.
+                  </p>
+                </div>
                 {bulkRows.length === 0 ? (
                   <div className="relative border-2 border-dashed border-slate-200 rounded-xl p-10 text-center hover:bg-emerald-50 cursor-pointer bg-slate-50/50">
                     <input type="file" className="absolute inset-0 opacity-0 cursor-pointer" onChange={handleFileUploadRaw} />
@@ -663,7 +706,7 @@ const App: React.FC = () => {
                     <p className="font-black text-[10px] uppercase">Загрузите CSV/Excel</p>
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-6">
                     {sheetNames.length > 1 && (
                       <div className="border-b pb-4 mb-2">
                         <Label className="text-[10px] uppercase">Выберите лист</Label>
@@ -673,7 +716,6 @@ const App: React.FC = () => {
                       </div>
                     )}
                     <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-4">
-                      <div className="text-[10px] uppercase text-slate-400 font-bold mb-2">Название файла: Имя_Фамилия_Платформа</div>
                       <div className="grid grid-cols-2 gap-4">
                         <MappingField label="Имя" field="firstName" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} />
                         <MappingField label="Фамилия" field="lastName" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} />
@@ -684,10 +726,23 @@ const App: React.FC = () => {
                             <option value="Telegram">Telegram</option>
                           </select>
                         </div>
-                        <MappingField label="Ссылка *" field="url" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} />
+                        <MappingField label="Ссылка *" field="url" mappedFields={mappedFields} setMappedFields={setMappedFields} bulkHeaders={bulkHeaders} required={true} />
                       </div>
                     </div>
-                    <Button onClick={resetBulk} variant="ghost" className="text-red-500 text-[10px] uppercase font-black">Удалить файл</Button>
+                    <div className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm space-y-4">
+                      <div>
+                        <Label className="text-[10px] uppercase text-slate-400">Формат скачивания:</Label>
+                        <div className="flex gap-2 mt-2">
+                          <button onClick={() => setBulkExportFormat('png')} className={`flex-1 py-2.5 rounded-lg flex items-center justify-center gap-2 font-black uppercase text-[10px] transition-all ${bulkExportFormat === 'png' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><FileImage size={14} /> PNG</button>
+                          <button onClick={() => setBulkExportFormat('svg')} className={`flex-1 py-2.5 rounded-lg flex items-center justify-center gap-2 font-black uppercase text-[10px] transition-all ${bulkExportFormat === 'svg' ? 'bg-emerald-600 text-white shadow-md' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}><FileCode size={14} /> SVG</button>
+                        </div>
+                      </div>
+                      <div className="pt-2 border-t border-slate-50">
+                        <Label className="text-[10px] uppercase text-slate-400">Пример названия файла:</Label>
+                        <div className="mt-2 bg-slate-50 px-3 py-2 rounded-lg font-mono text-[11px] text-emerald-600 font-bold overflow-hidden text-ellipsis whitespace-nowrap">{getExampleFilename()}</div>
+                      </div>
+                    </div>
+                    <Button onClick={resetBulk} variant="ghost" className="text-red-500 text-[10px] uppercase font-black w-full justify-center">Удалить текущий файл</Button>
                   </div>
                 )}
               </Card>
@@ -753,28 +808,6 @@ const App: React.FC = () => {
               </div>
             </Accordion>
 
-            <Accordion title="ЛОГОТИП" defaultOpen={false}>
-              <div className="space-y-6">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="relative border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:bg-emerald-50 cursor-pointer">
-                    <input type="file" className="absolute inset-0 opacity-0" onChange={handleLogoUpload} />
-                    <Plus className="mx-auto text-emerald-600 mb-2" />
-                    <p className="font-bold text-sm">Загрузить лого</p>
-                  </div>
-                  <div className="space-y-4">
-                    <div className="px-4 bg-slate-50 rounded-xl py-3 border border-slate-100">
-                      <div className="flex justify-between mb-1"><Label className="mb-0 text-[10px] uppercase">Размер логотипа</Label><EditableNumberLabel value={logoPixelSize} onChange={setLogoPixelSize} min={20} max={150} /></div>
-                      <input type="range" min="20" max="150" value={logoPixelSize} onChange={(e) => setLogoPixelSize(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg accent-emerald-600" />
-                    </div>
-                  </div>
-                </div>
-                {config.image && <Button variant="ghost" className="text-red-600 uppercase text-xs" onClick={() => setConfig({ ...config, image: undefined })}>Удалить текущий лого</Button>}
-                <div className="flex flex-wrap gap-2">
-                  {SOCIAL_LOGOS.map(l => <button key={l.id} onClick={() => setConfig({ ...config, image: l.url })} className={`w-10 h-10 border rounded-lg flex items-center justify-center bg-white ${config.image === l.url ? 'ring-2 ring-emerald-500' : 'border-gray-200'}`}>{React.cloneElement(l.icon as any, { size: 18 })}</button>)}
-                </div>
-              </div>
-            </Accordion>
-
             <Accordion title="ДИЗАЙН" defaultOpen={false}>
               <div className="space-y-4">
                 <Label className="text-[10px] uppercase">Стиль точек</Label>
@@ -804,6 +837,28 @@ const App: React.FC = () => {
                 </div>
               </div>
             </Accordion>
+
+            <Accordion title="ЛОГОТИП" defaultOpen={false}>
+              <div className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="relative border-2 border-dashed border-gray-200 rounded-xl p-6 text-center hover:bg-emerald-50 cursor-pointer">
+                    <input type="file" className="absolute inset-0 opacity-0" onChange={handleLogoUpload} />
+                    <Plus className="mx-auto text-emerald-600 mb-2" />
+                    <p className="font-bold text-sm">Загрузить лого</p>
+                  </div>
+                  <div className="space-y-4">
+                    <div className="px-4 bg-slate-50 rounded-xl py-3 border border-slate-100">
+                      <div className="flex justify-between mb-1"><Label className="mb-0 text-[10px] uppercase">Размер логотипа</Label><EditableNumberLabel value={logoPixelSize} onChange={setLogoPixelSize} min={20} max={150} /></div>
+                      <input type="range" min="20" max="150" value={logoPixelSize} onChange={(e) => setLogoPixelSize(parseInt(e.target.value))} className="w-full h-1.5 bg-gray-200 rounded-lg accent-emerald-600" />
+                    </div>
+                  </div>
+                </div>
+                {config.image && <Button variant="ghost" className="text-red-600 uppercase text-xs" onClick={() => setConfig({ ...config, image: undefined })}>Удалить текущий лого</Button>}
+                <div className="flex flex-wrap gap-2">
+                  {SOCIAL_LOGOS.map(l => <button key={l.id} onClick={() => setConfig({ ...config, image: l.url })} className={`w-10 h-10 border rounded-lg flex items-center justify-center bg-white ${config.image === l.url ? 'ring-2 ring-emerald-500' : 'border-gray-200'}`}>{React.cloneElement(l.icon as any, { size: 18 })}</button>)}
+                </div>
+              </div>
+            </Accordion>
           </div>
 
           <div className="w-full lg:w-[400px] lg:sticky lg:top-24">
@@ -814,7 +869,7 @@ const App: React.FC = () => {
                 ) : bulkRows.length > 0 ? (
                   <div ref={bulkSidebarRef} className="h-full w-full flex items-center justify-center" />
                 ) : (
-                  <div className="h-full w-full flex items-center justify-center text-slate-300 italic text-sm font-bold uppercase tracking-widest">Предпросмотр</div>
+                  <div className="h-full w-full flex items-center justify-center text-slate-300 italic text-sm font-bold uppercase tracking-widest text-center px-4">Загрузите данные для предпросмотра</div>
                 )}
               </div>
               
@@ -824,12 +879,26 @@ const App: React.FC = () => {
                 <div className="text-center">
                   <span className="px-3 py-1 bg-emerald-50 text-emerald-700 text-xs font-black rounded-full border border-emerald-100 shadow-sm">{exportSize} x {exportSize} px</span>
                 </div>
-                <div className="grid grid-cols-2 gap-2 mt-4">
-                  <Button className="w-full bg-emerald-600 text-white font-black" onClick={() => activeTab === 'single' ? handleDownload('png') : handleBulkDownloadZip('png')}>PNG</Button>
-                  <Button variant="outline" className="w-full border-emerald-600 text-emerald-600 font-black" onClick={() => activeTab === 'single' ? handleDownload('svg') : handleBulkDownloadZip('svg')}>SVG</Button>
-                </div>
+
+                {activeTab === 'single' ? (
+                  <div className="grid grid-cols-2 gap-2 mt-4">
+                    <Button className="w-full bg-emerald-600 text-white font-black" onClick={() => handleDownload('png')}>PNG</Button>
+                    <Button variant="outline" className="w-full border-emerald-600 text-emerald-600 font-black" onClick={() => handleDownload('svg')}>SVG</Button>
+                  </div>
+                ) : (
+                  <div className="space-y-4 mt-4">
+                    <Button 
+                      disabled={bulkRows.length === 0 || isProcessing || !mappedFields.url}
+                      className="w-full bg-emerald-600 text-white font-black py-4 flex flex-col gap-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                      onClick={() => handleBulkDownloadZip(bulkExportFormat)}
+                    >
+                      <span className="flex items-center gap-2"><Download size={18} /> {isProcessing ? 'Обработка...' : `СКАЧАТЬ ZIP (${bulkExportFormat.toUpperCase()})`}</span>
+                      {bulkRows.length > 0 && <span className="text-[9px] opacity-70">Всего объектов: {bulkRows.length}</span>}
+                    </Button>
+                  </div>
+                )}
                 
-                <div className="flex flex-col gap-2 mt-2">
+                <div className="flex flex-col gap-2 mt-2 pt-4 border-t">
                   <Button variant="ghost" className="w-full text-emerald-700 text-xs font-black uppercase border hover:bg-emerald-50" onClick={openSaveModal}><Save size={14} className="mr-1" /> Сохранить шаблон</Button>
                   <Button variant="ghost" className="w-full text-slate-700 text-xs font-black uppercase border hover:bg-slate-50" onClick={handleImportClick}><FileJson size={14} className="mr-1" /> Загрузить из файла</Button>
                   <input type="file" ref={importInputRef} className="hidden" accept=".json" onChange={handleImportFile} />
@@ -837,7 +906,6 @@ const App: React.FC = () => {
               </div>
             </Card>
 
-            {/* Template Gallery */}
             {templates.length > 0 && (
               <div className="mt-8 space-y-4">
                 <h3 className="font-black uppercase tracking-widest text-[10px] text-slate-400">Мои шаблоны ({templates.length}/10)</h3>
@@ -863,51 +931,17 @@ const App: React.FC = () => {
         </div>
       </main>
 
-      {/* Save Modal */}
-      <Modal 
-        isOpen={isSaveModalOpen} 
-        onClose={() => setIsSaveModalOpen(false)} 
-        title="Сохранить шаблон"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setIsSaveModalOpen(false)}>Отмена</Button>
-            <Button onClick={saveTemplate}>Сохранить</Button>
-          </>
-        }
-      >
+      <Modal isOpen={isSaveModalOpen} onClose={() => setIsSaveModalOpen(false)} title="Сохранить шаблон" footer={<><Button variant="ghost" onClick={() => setIsSaveModalOpen(false)}>Отмена</Button><Button onClick={saveTemplate}>Сохранить</Button></>}>
         <div className="space-y-4">
           <Label className="text-[10px] uppercase">Название шаблона</Label>
-          <Input 
-            autoFocus 
-            value={templateName} 
-            onChange={(e) => setTemplateName(e.target.value)} 
-            placeholder="Напр. Шаблон для Instagram" 
-            onKeyDown={(e) => e.key === 'Enter' && saveTemplate()}
-          />
+          <Input autoFocus value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="Напр. Шаблон для Instagram" onKeyDown={(e) => e.key === 'Enter' && saveTemplate()} />
         </div>
       </Modal>
 
-      {/* Rename Modal */}
-      <Modal 
-        isOpen={isRenameModalOpen} 
-        onClose={() => setIsRenameModalOpen(false)} 
-        title="Переименовать шаблон"
-        footer={
-          <>
-            <Button variant="ghost" onClick={() => setIsRenameModalOpen(false)}>Отмена</Button>
-            <Button onClick={renameTemplate}>Сохранить</Button>
-          </>
-        }
-      >
+      <Modal isOpen={isRenameModalOpen} onClose={() => setIsRenameModalOpen(false)} title="Переименовать шаблон" footer={<><Button variant="ghost" onClick={() => setIsRenameModalOpen(false)}>Отмена</Button><Button onClick={renameTemplate}>Сохранить</Button></>}>
         <div className="space-y-4">
           <Label className="text-[10px] uppercase">Новое название</Label>
-          <Input 
-            autoFocus 
-            value={templateName} 
-            onChange={(e) => setTemplateName(e.target.value)} 
-            placeholder="Введите название..." 
-            onKeyDown={(e) => e.key === 'Enter' && renameTemplate()}
-          />
+          <Input autoFocus value={templateName} onChange={(e) => setTemplateName(e.target.value)} placeholder="Введите название..." onKeyDown={(e) => e.key === 'Enter' && renameTemplate()} />
         </div>
       </Modal>
 
